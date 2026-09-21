@@ -1,3 +1,6 @@
+> [!WARNING]
+> This project is currently not stable
+
 # compl.nvim
 
 A small Neovim 0.10+ plugin that captures the current file and previews an insertion
