@@ -7,31 +7,37 @@ A small Neovim 0.10+ plugin that captures the current file and previews an inser
 as ghost text. Accept the whole suggestion or dismiss it. Supports multiline text,
 custom Lua generators, and Codex App Server with your existing Codex login.
 
-## Local installation
+## Installation
 
-Add this to `~/.config/nvim/init.lua` (adjust the path if needed):
+### lazy.nvim
 
-```lua
-vim.opt.runtimepath:append('/home/lukas/code/compl')
-require('compl').setup({
-  provider = 'codex',
-  codex = {
-    command = 'codex',
-    timeout_ms = 60000,
-    model = 'gpt-5.6-luna',
-    effort = 'low',
-  },
-})
-```
-
-Or configure a local plugin with lazy.nvim:
+Add the plugin to your lazy.nvim plugin specification:
 
 ```lua
 {
-  dir = '/home/lukas/code/compl',
+  'Lukas-Fohl/complete.nvim',
   name = 'compl.nvim',
-  opts = { provider = 'codex' },
+  opts = {
+    provider = 'codex',
+  },
 }
+```
+
+lazy.nvim will install the plugin and call `require('compl').setup(opts)`.
+
+### Neovim package manager
+
+Neovim 0.12+ includes the built-in `vim.pack` package manager. Add this to
+`~/.config/nvim/init.lua`:
+
+```lua
+vim.pack.add({
+  'https://github.com/Lukas-Fohl/complete.nvim',
+})
+
+require('compl').setup({
+  provider = 'codex',
+})
 ```
 
 Install Codex CLI separately and run `codex login` in a terminal first. The plugin
