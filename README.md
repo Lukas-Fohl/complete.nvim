@@ -80,6 +80,48 @@ require('compl').setup({
 })
 ```
 
+## Configuration
+
+All `setup()` options are shown below. Omitted options use the defaults shown here.
+
+```lua
+require('compl').setup({
+  provider = 'codex', -- nil, 'stub', or 'codex'
+  process = function(context)
+    return context
+  end,
+  -- generate = function(context) ... end, -- use instead of provider = 'codex'
+  keys = {
+    trigger = '<leader>cg',
+    accept = '<leader>ca',
+    dismiss = '<leader>cd',
+    suggestion = {
+      accept = { '<Tab>', '<CR>' }, -- key, list of keys, or false
+      dismiss = '<Esc>',            -- key, list of keys, or false
+    },
+  },
+  codex = {
+    command = 'codex',              -- executable or argv list
+    timeout_ms = 60000,
+    model = 'gpt-5.6-luna',         -- false inherits Codex's configured model
+    effort = 'low',                 -- false inherits Codex's configured effort
+    auto_start = true,
+    stream = true,
+    position = 'cursor',            -- or 'model'
+    context = 'nearby',             -- or 'file'
+    context_lines = 80,
+    max_suggestion_lines = 8,       -- false removes the limit
+    autonomous = false,
+  },
+})
+```
+
+`provider = 'stub'` and an omitted `provider` use the offline example suggestion.
+`provider = 'codex'` and `generate` are mutually exclusive. `process` is optional and
+can be used with either provider. `codex` options only apply to the Codex provider.
+Persistent mappings can be a string or `false`; temporary suggestion mappings can be a
+string, a list of strings, or `false`.
+
 By default, suggestions appear at the cursor position captured on trigger.
 The first suggestion line appears inline at that position. Additional
 lines appear as virtual lines below it. Existing text after that position stays
@@ -123,8 +165,8 @@ require('compl').setup({
 })
 ```
 
-Return `nil` or empty `text` to show nothing. Use LF (`\n`) for newlines, including
-any trailing newline. Positions use **zero-based rows and UTF-8 byte columns**.
+Return a non-empty `text` value. Use LF (`\n`) for newlines, including any trailing
+newline. Positions use **zero-based rows and UTF-8 byte columns**.
 The row must exist and the column must be on a character boundary within the line
 or at its end. Omit `position` in custom generators to use the trigger cursor.
 Suggestions insert text; they cannot replace or delete existing code.
@@ -155,8 +197,8 @@ require('compl').setup({
     position = 'cursor',
     context = 'nearby',
     context_lines = 80,
-    max_suggestion_lines = 24,
-    autonomous = true,
+    max_suggestion_lines = 8,
+    autonomous = false,
     stream = true,
     timeout_ms = 60000,
   },
@@ -181,15 +223,15 @@ require('compl').setup({
   excerpt start row, and cursor. Absolute positions stay correct for cropped input.
   Capture and your `process` callback still receive the full file; cropping happens
   afterward. Extra fields added by your processor are preserved.
-- `max_suggestion_lines`: prompt Codex for at most this many lines. An overlong final
-  response is rejected rather than inserted incompletely. Newline-separated empty
-  lines count, including a trailing empty line. This is a prompt/output check, not
-  a server token budget or a guarantee of generation speed.
-- `autonomous`: when `true` (the default), ask Codex to infer the local intent and
-  produce a cohesive, implementation-ready insertion instead of the smallest possible
-  fragment. It still cannot use tools, read files beyond the supplied context, replace
-  existing text, or insert more than `max_suggestion_lines`. Set `false` for shorter,
-  more conservative suggestions.
+- `max_suggestion_lines`: prompt Codex for at most this many lines (8 by default). An overlong final
+  response is rejected rather than inserted incompletely. Set it to `false` to remove the line
+  limit. Newline-separated empty lines count, including a trailing empty line. This is a
+  prompt/output check, not a server token budget or a guarantee of generation speed.
+- `autonomous`: when `true`, ask Codex to infer the local intent and produce a cohesive,
+  implementation-ready insertion. The default `false` requests the shortest useful local
+  completion instead. In either mode, Codex cannot use tools, read files beyond the supplied
+  context, or replace existing text. When `max_suggestion_lines` is not `false`, it also
+  cannot insert more than that limit.
 - `stream`: preview decoded text as it arrives. In cursor mode the fixed position
   allows early display; model-selected positions wait for the final response.
   Partial escapes and incomplete Unicode characters are held back. Partial previews
@@ -197,19 +239,21 @@ require('compl').setup({
   the final response in all modes.
 
 Compared with earlier versions, Codex now defaults to Luna/low, starts in the
-background, sends nearby code, and inserts at the cursor. To restore earlier
-selection behavior use `model = false`, `effort = false`, `auto_start = false`,
-`position = 'model'`, `context = 'file'`, and `autonomous = false`.
+background, sends nearby code, inserts at the cursor, and asks for short local
+completions. To restore earlier selection behavior use `model = false`,
+`effort = false`, `auto_start = false`, `position = 'model'`, `context = 'file'`,
+and `autonomous = false`.
 
 ## Latency measurements
 
 Run `:ComplStats`, or inspect `require('compl').stats()`. Measurements are in
 milliseconds and describe the latest request; no prompts or generated code are logged.
 
-- `warmup.startup_ms`: background process initialization time.
+- `warmup.startup_ms`: background process initialization and authentication time.
+- `warmup.auth_ms`: time spent validating the stored Codex account during warmup.
 - `request.prepare_ms`: context selection and prompt encoding time.
 - `request.startup_ms`: time this request waited for initialization (near zero if warm).
-- `request.auth_ms` / `thread_ms`: account check and fresh-thread creation time.
+- `warmup.thread_ms`: reusable conversation-thread creation time.
 - `request.first_token_ms`: elapsed request time to the first agent-message delta.
 - `request.first_preview_ms`: elapsed request time to the first decoded preview update.
 - `request.generation_ms`: elapsed time from sending the turn to completion.
@@ -225,9 +269,10 @@ Streaming improves time to visible text; it does not shorten model generation it
 
 One local `codex app-server --listen stdio://` process initializes in the background
 by default and stays alive until reconfiguration or Neovim exit. No Node.js bridge
-or listening network port is needed. Each trigger creates a fresh ephemeral thread
-and requests structured output from the selected context. Threads are unsubscribed
-after completion/cancellation; Codex controls when they unload from memory.
+or listening network port is needed. Warmup creates one ephemeral conversation thread
+with the developer instructions; each trigger starts a new turn in that thread and
+requests structured output from the selected context. The thread is unsubscribed when
+the provider stops; Codex controls when it unloads from memory.
 
 Threads run in read-only mode with approvals disabled. The prompt requests only an
 insertion and forbids tools; this is still the Codex agent, not a tool-free model API.
@@ -255,5 +300,5 @@ nvim --headless -u NONE -i NONE -l tests/codex.lua
 ```
 
 The Codex suite uses a Python 3 fake server and makes no model requests. Tests cover
-rendering, insertion, undo, protocol framing, authentication/errors, fresh
+rendering, insertion, undo, protocol framing, authentication/errors, reusable
 conversations, timeouts, cancellation races, and server restart.

@@ -15,12 +15,9 @@ end
 
 function M.show(buf, snapshot, tick, cursor, result, partial)
   M.dismiss()
-  assert(type(result) == 'table' and type(result.text) == 'string',
-    'compl: generate must return nil or { text = string, position = { row, col } }')
+  assert(type(result) == 'table' and type(result.text) == 'string' and result.text ~= '',
+    'compl: generate must return { text = non-empty string, position = { row, col } }')
   assert(not result.text:find('\r'), 'compl: use LF newlines in suggestions')
-  if result.text == '' then
-    return false
-  end
   local position = result.position or {
     row = cursor[1] - 1,
     col = math.min(cursor[2], #snapshot.file.lines[cursor[1]]),

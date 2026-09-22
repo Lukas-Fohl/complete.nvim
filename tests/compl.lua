@@ -164,7 +164,7 @@ eq(pcall(compl.trigger), false)
 eq(#marks(), 0)
 for _, generate in ipairs({ function() return nil end, function() return { text = '' } end }) do
   compl.setup({ generate = generate })
-  compl.trigger()
+  eq(pcall(compl.trigger), false)
   eq(#marks(), 0)
 end
 compl.setup()

@@ -32,9 +32,9 @@ for _ = 1, 2 do
   end)
   wait(function() return completed end)
 end
-wait(function() return count('thread/unsubscribe') == 2 end)
 eq(count('initialize'), 1)
-eq(count('thread/start'), 2)
+eq(count('account/read'), 1)
+eq(count('thread/start'), 1)
 p.stop()
 
 -- The larger limit and autonomy prompt are configurable per provider.
@@ -92,14 +92,13 @@ for mode, expected in pairs({
   p.stop()
 end
 
--- Cancellation before thread/turn IDs arrive still releases the eventual resources.
+-- Cancellation before thread/turn IDs arrive still interrupts the request.
 for _, mode in ipairs({ 'slow_thread', 'slow_turn', 'hang' }) do
   p = create(mode)
   local called = false
   local cancel = p.generate(context, function() called = true end)
   wait(function() return count(mode == 'slow_thread' and 'thread/start' or 'turn/start') == 1 end)
   cancel()
-  wait(function() return count('thread/unsubscribe') >= 1 end)
   if mode ~= 'slow_thread' then wait(function() return count('turn/interrupt') >= 1 end) end
   eq(called, false)
   p.stop()

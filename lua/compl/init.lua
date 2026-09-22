@@ -91,9 +91,7 @@ function M.trigger()
   local processed = process(vim.deepcopy(snapshot))
   if not provider then
     local result = generate(processed)
-    if result ~= nil then
-      if ghost.show(buf, snapshot, tick, cursor, result) then set_controls(buf) end
-    end
+    if ghost.show(buf, snapshot, tick, cursor, result) then set_controls(buf) end
     return
   end
   local request = { buf = buf }
@@ -120,16 +118,7 @@ function M.trigger()
       vim.notify('compl: ' .. err, vim.log.levels.ERROR)
       return
     end
-    if result then
-      if result.text == '' then
-        M.dismiss()
-        vim.notify('compl: no suggestion', vim.log.levels.INFO)
-      else
-        render(result, false)
-      end
-    else
-      M.dismiss()
-    end
+    render(result, false)
   end, {
     position = { row = cursor[1] - 1, col = math.min(cursor[2], #snapshot.file.lines[cursor[1]]) },
     on_partial = function(result)

@@ -23,7 +23,7 @@ local function prepare(context, position, opts)
   input.cursor = vim.deepcopy(position)
   local schema = {
     type = 'object', additionalProperties = false, required = { 'text' },
-    properties = { text = { type = 'string' } },
+    properties = { text = { type = 'string', minLength = 1 } },
   }
   local placement = 'Insert exactly at the supplied cursor. Return only the text field.'
   if opts.position == 'model' then
@@ -34,7 +34,11 @@ local function prepare(context, position, opts)
     }
     placement = 'Choose the best insertion position within the supplied lines and return text and position.'
   end
-  local scope = 'Make the smallest useful insertion that completes one local idea.'
+  local scope = [[Make the shortest useful insertion that completes the immediate local idea.
+When the context clearly starts or implies a function or method, prefer completing the entire
+function or method if it fits the line limit. Otherwise prefer one line or a small number of lines.
+Return only code, with no explanation, comments, markdown, extra setup, refactoring, or unrelated
+improvements.]]
   if opts.autonomous then
     scope = [[Work proactively: infer the local intent and produce a cohesive, implementation-ready
 insertion. Include related setup, branches, error handling, or tests only when they belong at this
@@ -47,8 +51,13 @@ Return JSON matching the supplied schema. text is the exact insertion, including
 and LF newlines. Do not replace or delete existing text; avoid repeating surrounding code.
 Rows are absolute zero-based file rows, not offsets into the excerpt. file.start_row is the
 absolute row of file.lines[1]. Columns are zero-based UTF-8 byte offsets at character boundaries.
-Use an empty text string if no insertion is useful.
-]] .. placement .. '\n' .. scope .. '\nKeep the insertion to at most ' .. opts.max_suggestion_lines .. ' lines.'
+Always return a useful, non-empty insertion.
+]] .. placement .. '\n' .. scope
+  if opts.max_suggestion_lines then
+    instructions = instructions .. '\nKeep the insertion to at most ' .. opts.max_suggestion_lines .. ' lines.'
+  else
+    instructions = instructions .. '\nDo not impose a line limit; complete the requested code naturally.'
+  end
   return input, schema, instructions
 end
 
@@ -102,12 +111,13 @@ function M.new(options)
   local opts = vim.tbl_extend('force', {
     command = 'codex', timeout_ms = 60000, model = 'gpt-5.6-luna', effort = 'low',
     auto_start = true, stream = true, position = 'cursor', context = 'nearby', context_lines = 80,
-    max_suggestion_lines = 24, autonomous = true,
+    max_suggestion_lines = 8, autonomous = false,
   }, options)
   -- Keep the previous `context_lines = false` configuration working.
   if options.context == nil and options.context_lines == false then opts.context = 'file' end
   assert(positive_integer(opts.timeout_ms), 'compl: timeout_ms must be a positive integer')
-  assert(positive_integer(opts.max_suggestion_lines), 'compl: max_suggestion_lines must be a positive integer')
+  assert(opts.max_suggestion_lines == false or positive_integer(opts.max_suggestion_lines),
+    'compl: max_suggestion_lines must be a positive integer or false')
   assert(opts.context == 'nearby' or opts.context == 'file', 'compl: context must be nearby or file')
   assert(opts.context == 'file' or (type(opts.context_lines) == 'number'
     and opts.context_lines >= 0 and opts.context_lines < math.huge
@@ -124,6 +134,9 @@ function M.new(options)
   local client = require('compl.transport').new(opts.command)
   local self = { auto_start = opts.auto_start }
   local warm_timer, warm_metrics
+  local account_ready = false
+  local conversation_thread
+  local warm_waiters = {}
 
   function self.stats()
     return vim.deepcopy({ warmup = warm_metrics, request = self.last_request })
@@ -131,13 +144,26 @@ function M.new(options)
 
   function self.stop()
     if warm_timer then warm_timer:stop(); warm_timer:close(); warm_timer = nil end
+    if conversation_thread and client.ready then
+      client.request('thread/unsubscribe', { threadId = conversation_thread })
+    end
+    conversation_thread = nil
+    account_ready = false
+    warm_waiters = {}
     client.stop()
   end
 
-  -- Initialization only: no file context, thread, or model request during warmup.
+  -- Start the server and validate authentication once. File context and model
+  -- generation are still deferred until a suggestion is requested.
   function self.warmup(callback)
     callback = callback or function() end
-    if warm_timer or client.ready then callback(); return end
+    if client.ready and account_ready and conversation_thread then callback(); return end
+    if not client.ready then
+      account_ready = false
+      conversation_thread = nil
+    end
+    warm_waiters[#warm_waiters + 1] = callback
+    if warm_timer then return end
     local started = now()
     local completed = false
     warm_metrics = { status = 'starting' }
@@ -146,7 +172,9 @@ function M.new(options)
       completed = true
       if warm_timer then warm_timer:stop(); warm_timer:close(); warm_timer = nil end
       warm_metrics = { status = err and 'error' or 'ready', startup_ms = now() - started }
-      callback(err)
+      local waiters = warm_waiters
+      warm_waiters = {}
+      for _, waiter in ipairs(waiters) do waiter(err) end
     end
     warm_timer = vim.uv.new_timer()
     warm_timer:start(opts.timeout_ms, 0, vim.schedule_wrap(function()
@@ -154,7 +182,30 @@ function M.new(options)
       finish('Codex startup timed out')
       client.stop('Codex startup timed out')
     end))
-    client.start(finish)
+    client.start(function(err)
+      if err then finish(err); return end
+      local auth_start = now()
+      client.request('account/read', { refreshToken = false }, function(auth_err, account)
+        warm_metrics.auth_ms = now() - auth_start
+        if auth_err then finish(auth_err); return end
+        if not account or account.account == nil or account.account == vim.NIL then
+          finish('Codex is signed out. Run codex login in a terminal, then trigger again.')
+          return
+        end
+        account_ready = true
+        local thread_start = now()
+        local _, _, instructions = prepare({ file = { lines = { '' } } }, { row = 0, col = 0 }, opts)
+        client.request('thread/start', {
+          ephemeral = true, model = model, sandbox = 'read-only', approvalPolicy = 'never',
+          developerInstructions = instructions,
+        }, function(thread_err, response)
+          warm_metrics.thread_ms = now() - thread_start
+          if thread_err then finish(thread_err); return end
+          conversation_thread = response.thread.id
+          finish()
+        end)
+      end)
+    end)
   end
 
   -- editor keeps cursor/UI state separate from the processed file object.
@@ -164,7 +215,7 @@ function M.new(options)
     local started = now()
     local metrics = { status = 'running', model = model or 'codex default', effort = effort or 'codex default' }
     self.last_request = metrics
-    local input, schema, instructions = prepare(context, position, opts)
+    local input, schema = prepare(context, position, opts)
     metrics.context_lines = #input.file.lines
     local prompt = 'Suggest an insertion for this context:\n' .. vim.json.encode(input)
     metrics.prompt_bytes = #prompt
@@ -172,9 +223,6 @@ function M.new(options)
     local done, thread, turn, final_text = false, nil, nil, nil
     local unsubscribe, timer, generation_start
     local streamed, phases, last_preview = {}, {}, nil
-    local function release()
-      if thread then client.request('thread/unsubscribe', { threadId = thread }) end
-    end
     local function interrupt()
       if thread and turn then client.request('turn/interrupt', { threadId = thread, turnId = turn }) end
     end
@@ -187,7 +235,6 @@ function M.new(options)
       if timer then timer:stop(); timer:close() end
       if unsubscribe then unsubscribe() end
       if err then interrupt() end
-      release()
       callback(err, result)
     end
     local function line_count(text)
@@ -196,7 +243,7 @@ function M.new(options)
     end
     local function publish(text)
       if not text or text == '' or text == last_preview or text:find('\r')
-        or line_count(text) > opts.max_suggestion_lines then return end
+        or (opts.max_suggestion_lines and line_count(text) > opts.max_suggestion_lines) then return end
       last_preview = text
       metrics.first_preview_ms = metrics.first_preview_ms or now() - started
       editor.on_partial({ text = text, position = position })
@@ -233,7 +280,7 @@ function M.new(options)
           if not ok or type(result) ~= 'table' or type(result.text) ~= 'string'
             or (opts.position == 'model' and type(result.position) ~= 'table') then
             finish('Codex returned an invalid suggestion')
-          elseif line_count(result.text) > opts.max_suggestion_lines then
+          elseif opts.max_suggestion_lines and line_count(result.text) > opts.max_suggestion_lines then
             finish('Codex exceeded max_suggestion_lines; suggestion discarded')
           else
             if opts.position == 'cursor' then result.position = vim.deepcopy(position) end
@@ -249,38 +296,21 @@ function M.new(options)
       client.stop('Codex request timed out')
     end))
     local startup_start = now()
-    client.start(function(err)
+    self.warmup(function(err)
       if done then return end
       metrics.startup_ms = now() - startup_start
       if err then finish(err); return end
-      local auth_start = now()
-      client.request('account/read', { refreshToken = false }, function(auth_err, account)
-        if done then return end
-        metrics.auth_ms = now() - auth_start
-        if auth_err then finish(auth_err); return end
-        if not account or account.account == nil or account.account == vim.NIL then
-          finish('Codex is signed out. Run codex login in a terminal, then trigger again.'); return
-        end
-        local thread_start = now()
-        client.request('thread/start', {
-          ephemeral = true, model = model, sandbox = 'read-only', approvalPolicy = 'never',
-          developerInstructions = instructions,
-        }, function(thread_err, response)
-          if thread_err then if not done then finish(thread_err) end; return end
-          thread = response.thread.id
-          if done then release(); return end
-          metrics.thread_ms = now() - thread_start
-          generation_start = now()
-          client.request('turn/start', {
-            threadId = thread, model = model, effort = effort, approvalPolicy = 'never',
-            sandboxPolicy = { type = 'readOnly', networkAccess = false },
-            input = { { type = 'text', text = prompt } }, outputSchema = schema,
-          }, function(turn_err, response_turn)
-            if turn_err then if not done then finish(turn_err) end; return end
-            turn = response_turn.turn.id
-            if done then interrupt(); release() end
-          end)
-        end)
+      thread = conversation_thread
+      if not thread then finish('Codex conversation is not ready'); return end
+      generation_start = now()
+      client.request('turn/start', {
+        threadId = thread, model = model, effort = effort, approvalPolicy = 'never',
+        sandboxPolicy = { type = 'readOnly', networkAccess = false },
+        input = { { type = 'text', text = prompt } }, outputSchema = schema,
+      }, function(turn_err, response_turn)
+        if turn_err then if not done then finish(turn_err) end; return end
+        turn = response_turn.turn.id
+        if done then interrupt() end
       end)
     end)
     return function()
