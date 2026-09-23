@@ -111,7 +111,7 @@ function M.new(options)
   local opts = vim.tbl_extend('force', {
     command = 'codex', timeout_ms = 60000, model = 'gpt-5.6-luna', effort = 'low',
     auto_start = true, stream = true, position = 'cursor', context = 'nearby', context_lines = 80,
-    max_suggestion_lines = 8, autonomous = false,
+    max_suggestion_lines = 8, autonomous = false, fast = false,
   }, options)
   -- Keep the previous `context_lines = false` configuration working.
   if options.context == nil and options.context_lines == false then opts.context = 'file' end
@@ -123,7 +123,7 @@ function M.new(options)
     and opts.context_lines >= 0 and opts.context_lines < math.huge
     and opts.context_lines == math.floor(opts.context_lines)), 'compl: context_lines must be a nonnegative integer')
   assert(opts.position == 'cursor' or opts.position == 'model', 'compl: position must be cursor or model')
-  for _, key in ipairs({ 'auto_start', 'stream', 'autonomous' }) do
+  for _, key in ipairs({ 'auto_start', 'stream', 'autonomous', 'fast' }) do
     assert(type(opts[key]) == 'boolean', 'compl: ' .. key .. ' must be boolean')
   end
   for _, key in ipairs({ 'model', 'effort' }) do
@@ -306,6 +306,7 @@ function M.new(options)
       client.request('turn/start', {
         threadId = thread, model = model, effort = effort, approvalPolicy = 'never',
         sandboxPolicy = { type = 'readOnly', networkAccess = false },
+        serviceTierForTurn = opts.fast and 'fast' or nil,
         input = { { type = 'text', text = prompt } }, outputSchema = schema,
       }, function(turn_err, response_turn)
         if turn_err then if not done then finish(turn_err) end; return end

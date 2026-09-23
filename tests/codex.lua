@@ -39,7 +39,7 @@ p.stop()
 
 -- The larger limit and autonomy prompt are configurable per provider.
 vim.fn.writefile({}, log)
-p = Provider.new({ command = command, timeout_ms = 2000, position = 'model', max_suggestion_lines = 40, autonomous = true })
+p = Provider.new({ command = command, timeout_ms = 2000, position = 'model', max_suggestion_lines = 40, autonomous = true, fast = true })
 local completed = false
 p.generate(context, function(err) eq(err, nil); completed = true end)
 wait(function() return completed end)
@@ -47,6 +47,8 @@ for _, item in ipairs(requests()) do
   if item.method == 'thread/start' then
     assert(item.params.developerInstructions:find('Work proactively', 1, true))
     assert(item.params.developerInstructions:find('at most 40 lines', 1, true))
+  elseif item.method == 'turn/start' then
+    eq(item.params.serviceTierForTurn, 'fast')
   end
 end
 p.stop()

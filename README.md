@@ -112,6 +112,7 @@ require('compl').setup({
     context_lines = 80,
     max_suggestion_lines = 8,       -- false removes the limit
     autonomous = false,
+    fast = false,                    -- use Fast mode when true
   },
 })
 ```
@@ -237,6 +238,9 @@ require('compl').setup({
   Partial escapes and incomplete Unicode characters are held back. Partial previews
   cannot be accepted, and failures/cancellations clear them. Set `false` to wait for
   the final response in all modes.
+- `fast`: when `true`, request Fast mode for each turn through the Codex App Server.
+  This may improve latency but can consume credits at a higher rate. It requires Fast
+  mode access for the signed-in Codex account and selected model. The default is `false`.
 
 Compared with earlier versions, Codex now defaults to Luna/low, starts in the
 background, sends nearby code, inserts at the cursor, and asks for short local
